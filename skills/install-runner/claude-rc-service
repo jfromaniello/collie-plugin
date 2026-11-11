@@ -1,0 +1,107 @@
+#!/bin/bash -l
+# Keeps a `claude remote-control` server alive for one repo inside a tmux session, so the collie runner (a Claude
+# Code scheduled task bound to this machine's environment) can start sessions here. Installed by the collie plugin's
+# install-runner skill and run by launchd (macOS) or systemd --user (Linux), which restart it when it exits.
+#
+# Usage: claude-rc-service <name> <repo-dir>
+#
+# If the tmux session already exists it is adopted, not restarted. The script blocks while the session lives; when it
+# dies the script exits and the service manager starts it again.
+#
+# Every fresh `claude rc` registers a new environment id, and scheduled tasks bound to the old one fail with
+# ENVIRONMENT_UNAVAILABLE. When the id changes, a headless `claude -p` re-points them (RemoteTrigger tool) to the new
+# one. The trigger id and token collie holds belong to the scheduled task, so collie needs no change.
+# Logs: ~/.local/state/claude-rc/<name>.out.log (the pane) and the service log.
+
+set -u
+name=$1
+dir=$2
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+state_dir="$HOME/.local/state/claude-rc"
+out_log="$state_dir/$name.out.log"
+env_file="$state_dir/$name.env"
+mkdir -p "$state_dir"
+
+log() { echo "$(date '+%F %T') $name $*"; }
+
+notify() {
+  if command -v osascript >/dev/null; then
+    osascript -e "display notification \"$1\" with title \"claude rc: $name\"" 2>/dev/null
+  elif command -v notify-send >/dev/null; then
+    notify-send "claude rc: $name" "$1" 2>/dev/null
+  fi
+}
+
+# Re-points the scheduled tasks bound to this machine's old environment to the new one, with a headless claude
+# (it has the claude.ai login; the shell does not).
+repoint_routines() {
+  local old=$1 new=$2 repo
+  repo=$(git -C "$dir" remote get-url origin 2>/dev/null | sed -E 's#^git@github.com:#https://github.com/#; s#\.git$##')
+  log "re-pointing scheduled tasks: ${old:-none} -> $new (repo ${repo:-?})"
+  local prompt="Use the RemoteTrigger tool to list the scheduled tasks (routines) and set job_config.ccr.environment_id to $new on those that:
+- have environment_id ${old:-<none>}, or
+- run in this repository ($repo, the folder $dir) and are failing or disabled because their environment is gone (last_run.failure_reason ROUTINE_RUN_FAILURE_REASON_ENVIRONMENT_UNAVAILABLE or ended_reason auto_disabled_env_not_found); set those enabled: true as well.
+In the update send the whole job_config.ccr (events and session_context as they are), changing only environment_id. Do not touch any other scheduled task. End with one line per task: name, previous environment, result."
+  local out
+  if out=$(cd "$dir" && claude -p --allowedTools=RemoteTrigger -- "$prompt" 2>&1); then
+    echo "$out" | sed "s/^/$(date '+%F %T') $name   /"
+    notify "New environment $new; scheduled tasks re-pointed."
+  else
+    log "re-point failed: $out"
+    notify "New environment $new; could not re-point the scheduled tasks, do it by hand."
+    return 1
+  fi
+}
+
+# If claude rc died because the login is gone, say so (at most once an hour: the service restarts every minute).
+check_login() {
+  local stamp="$state_dir/$name.login-notified"
+  tail -c 4000 "$out_log" 2>/dev/null | grep -q 'must be logged in' || { rm -f "$stamp"; return; }
+  [[ -f $stamp && -z $(find "$stamp" -mmin +60) ]] && return
+  touch "$stamp"
+  log "not logged in"
+  notify "claude is not logged in: run claude auth login. The collie runner will not start sessions."
+}
+
+# Keep the machine awake while the bridge is up (macOS: -s applies on AC power only).
+if command -v caffeinate >/dev/null; then
+  caffeinate -is -w $$ &
+fi
+
+if ! tmux has-session -t "$name" 2>/dev/null; then
+  log "starting in $dir"
+  tmux new-session -d -s "$name" -c "$dir" \
+    "claude rc --spawn worktree; echo \"\$(date '+%F %T') claude rc exited with \$?\" >> '$out_log'"
+  tmux pipe-pane -o -t "$name" "cat >> '$out_log'"
+else
+  log "adopting the existing tmux session"
+fi
+
+# Wait for the bridge to print its environment id and compare it with the last one.
+for _ in {1..20}; do
+  env_id=$(tmux capture-pane -p -J -t "$name" 2>/dev/null | grep -oE 'env_[A-Za-z0-9]+' | tail -1)
+  [[ -n $env_id ]] && break
+  sleep 3
+done
+if [[ -n ${env_id:-} ]]; then
+  echo "$env_id" > "$state_dir/$name.current-env"
+  old_id=$(cat "$env_file" 2>/dev/null)
+  if [[ $env_id != $old_id ]]; then
+    log "environment changed: ${old_id:-none} -> $env_id"
+    # Remember the new id only once the tasks point at it, so a failed re-point is retried on the next start.
+    if [[ -z $old_id ]]; then
+      echo "$env_id" > "$env_file"
+    else
+      repoint_routines "$old_id" "$env_id" && echo "$env_id" > "$env_file"
+    fi
+  fi
+fi
+
+while tmux has-session -t "$name" 2>/dev/null; do
+  sleep 30
+done
+
+log "ended"
+check_login

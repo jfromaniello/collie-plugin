@@ -1,0 +1,15 @@
+# ~/.config/systemd/user/claude-rc-NAME.service: replace NAME, SCRIPT and REPO_DIR.
+# Then: systemctl --user daemon-reload && systemctl --user enable --now claude-rc-NAME
+# and, so it runs without an open login session: loginctl enable-linger "$USER"
+[Unit]
+Description=claude remote-control for NAME (collie runner)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=SCRIPT NAME REPO_DIR
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=default.target

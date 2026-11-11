@@ -1,0 +1,12 @@
+{
+  "name": "collie",
+  "description": "Claude Code plugin for collie: agents execute, people decide.",
+  "owner": { "name": "José F. Romaniello", "url": "https://github.com/jfromaniello" },
+  "plugins": [
+    {
+      "name": "collie",
+      "source": "./",
+      "description": "Work collie tasks from Claude Code and connect a repo as a collie runner on your machine."
+    }
+  ]
+}
