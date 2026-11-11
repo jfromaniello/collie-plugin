@@ -34,3 +34,13 @@ trigger id and token it holds belong to the scheduled task, not to the environme
 machine awake on AC power.
 
 Logs: `~/.local/state/claude-rc/<name>.log` (service) and `<name>.out.log` (the `claude rc` pane).
+
+## Cleanup
+
+`claude rc --spawn worktree` never ends a session nor removes its worktree, so every run leaves a process and a
+checkout in `<repo>/.claude/worktrees/bridge-cse_<id>`. `skills/install-runner/claude-worktree-cleanup <repo-dir>
+[prompt-prefix ...]` runs every hour (launchd `StartInterval`, or a systemd `--user` timer). For each worktree whose
+session started with the worker prompt (or one of the prefixes given) and has been idle for `IDLE_HOURS` (default 2),
+it stops the session and removes the worktree and its `worktree-bridge-*` branch if it has no changes and no commits
+missing from the remotes; otherwise it keeps it and logs why. Sessions opened by hand through the same bridge are
+never touched. `--dry-run` prints what it would do. Log: `~/.local/state/claude-rc/<name>.cleanup.log`.

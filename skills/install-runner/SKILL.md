@@ -12,7 +12,8 @@ things: a service that keeps this machine's environment up, the scheduled task b
 Only one step needs the person: generating the trigger's token in claude.ai/code.
 
 This skill's files are in `${CLAUDE_SKILL_DIR}`: `claude-rc-service` (the service script), `launchd.plist` and
-`systemd.service` (templates). Tell the person what you are about to do before each step that
+`systemd.service` (its templates), `claude-worktree-cleanup` (the hourly cleanup) and `cleanup.launchd.plist`,
+`cleanup.systemd.service` and `cleanup.systemd.timer` (its templates). Tell the person what you are about to do before each step that
 changes their machine, and stop if they say no.
 
 ## 1. Check collie and find the codebase
@@ -47,6 +48,18 @@ Pick a short name: `collie-<codebase>` (lowercase, letters, digits and dashes).
    after you finish.
 4. Wait up to a minute for `~/.local/state/claude-rc/<name>.current-env`: it holds this machine's environment id
    (`env_…`). If it does not appear, read `~/.local/state/claude-rc/<name>.out.log` and the service log and report.
+5. Install the hourly cleanup. `claude rc --spawn worktree` never ends a session nor removes its worktree, so each
+   run leaves a process and a checkout in `<repo>/.claude/worktrees/bridge-cse_<id>`. `claude-worktree-cleanup`
+   stops the runner's sessions idle for 2 hours and removes their worktrees when nothing would be lost (no changes,
+   no commits missing from the remotes); anything else it keeps and logs. It only touches sessions whose first prompt
+   starts with the worker prompt below, never the ones someone opened by hand. Copy it to
+   `~/.local/bin/claude-worktree-cleanup` (`chmod +x`; same rule as above if a different file is there). If the repo's
+   existing scheduled task keeps a different prompt, pass its first words as an extra argument after REPO_DIR.
+   macOS: fill `cleanup.launchd.plist` into `~/Library/LaunchAgents/sh.collies.worktree-cleanup.<name>.plist` and
+   `launchctl bootstrap` it. Linux: fill `cleanup.systemd.service` and `cleanup.systemd.timer` into
+   `~/.config/systemd/user/claude-worktree-cleanup-<name>.{service,timer}`, then
+   `systemctl --user daemon-reload && systemctl --user enable --now claude-worktree-cleanup-<name>.timer`.
+   Before loading it, run it once with `--dry-run` and show the person what it would do.
 
 ## 4. Create or re-point the scheduled task
 
@@ -86,7 +99,7 @@ The trigger id is the scheduled task's id (`trig_…`, also in the trigger's Fir
 ## 7. Check and hand over
 
 - `RemoteTrigger` `get` on the scheduled task: enabled, the right `environment_id`, `api_token_hint` present.
-- Summarize: service name and how to see its logs, the scheduled task's link, the runner in collie, the dispatch mode.
+- Summarize: service name and how to see its logs (the cleanup logs to `~/.local/state/claude-rc/<name>.cleanup.log`), the scheduled task's link, the runner in collie, the dispatch mode.
 - To try it: in collie, a goal with ready tasks in this codebase shows **Fire session** in its **Sessions** section;
   the session that starts shows up there with an **Open session** link.
 - This machine has to stay on and online for sessions to start here; the service keeps it awake on AC power (macOS).

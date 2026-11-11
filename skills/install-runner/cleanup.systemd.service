@@ -1,0 +1,8 @@
+# ~/.config/systemd/user/claude-worktree-cleanup-NAME.service: replace NAME, SCRIPT and REPO_DIR.
+# Started every hour by claude-worktree-cleanup-NAME.timer (cleanup.systemd.timer).
+[Unit]
+Description=Clean up the collie runner's finished sessions and worktrees for NAME
+
+[Service]
+Type=oneshot
+ExecStart=SCRIPT REPO_DIR

@@ -1,0 +1,11 @@
+# ~/.config/systemd/user/claude-worktree-cleanup-NAME.timer: replace NAME.
+# Then: systemctl --user daemon-reload && systemctl --user enable --now claude-worktree-cleanup-NAME.timer
+[Unit]
+Description=Hourly cleanup of the collie runner's worktrees for NAME
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target
