@@ -10,8 +10,8 @@
 #      worker prompt). Sessions someone opened by hand through the same bridge are never touched.
 #   2. Skip it if its transcript changed in the last $IDLE_HOURS hours (default 2).
 #   3. Stop the session's process.
-#   4. Remove the worktree only if it has no changes (untracked symlinks such as a linked node_modules do not count)
-#      and no commits missing from the remotes, plus its throwaway worktree-bridge-* branch. Anything else is kept and
+#   4. Remove the worktree only if it has no changes (caches like __pycache__ and untracked symlinks such as a linked
+#      node_modules do not count) and no commits missing from the remotes, plus its throwaway worktree-bridge-* branch. Anything else is kept and
 #      logged, for a person to look at.
 
 set -u
@@ -47,12 +47,23 @@ is_runner_prompt() {
   return 1
 }
 
-# Changed or untracked entries, leaving out untracked symlinks (a node_modules linked by a worktree setup hook).
+# Untracked files a session leaves just by running things, which nobody would want back.
+is_cache() {
+  case $1 in
+    __pycache__/|*/__pycache__/|*.pyc|.pytest_cache/|*/.pytest_cache/|.DS_Store|*/.DS_Store) return 0 ;;
+  esac
+  return 1
+}
+
+# Changed or untracked entries, leaving out caches and untracked symlinks (a node_modules linked by a setup hook).
 dirty_count() {
   local wt=$1 n=0 line path
   while IFS= read -r line; do
     path=${line:3}
-    [[ $line == '?? '* && -L $wt/${path%/} ]] && continue
+    if [[ $line == '?? '* ]]; then
+      is_cache "$path" && continue
+      [[ -L $wt/${path%/} ]] && continue
+    fi
     n=$((n + 1))
   done < <(git -C "$wt" status --porcelain 2>/dev/null)
   echo $n
