@@ -1,0 +1,108 @@
+#!/bin/bash
+# Cleans up after the collie runner's sessions in one repo. Installed by the collie plugin's install-runner skill and
+# run every hour by launchd (macOS) or a systemd --user timer (Linux).
+#
+# Usage: claude-worktree-cleanup [--dry-run] <repo-dir> [prompt-prefix ...]
+#
+# `claude rc --spawn worktree` never ends a session on its own and never removes its worktree, so every run leaves a
+# live process and a checkout in <repo-dir>/.claude/worktrees/bridge-cse_<id>. For each of those worktrees:
+#   1. Only runner sessions are touched: those whose first prompt starts with one of the prefixes (default: the collie
+#      worker prompt). Sessions someone opened by hand through the same bridge are never touched.
+#   2. Skip it if its transcript changed in the last $IDLE_HOURS hours (default 2).
+#   3. Stop the session's process.
+#   4. Remove the worktree only if it has no changes (untracked symlinks such as a linked node_modules do not count)
+#      and no commits missing from the remotes, plus its throwaway worktree-bridge-* branch. Anything else is kept and
+#      logged, for a person to look at.
+
+set -u
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+dry=0
+if [[ ${1:-} == --dry-run ]]; then dry=1; shift; fi
+if [[ $# -lt 1 ]]; then
+  echo "usage: $0 [--dry-run] <repo-dir> [prompt-prefix ...]" >&2
+  exit 2
+fi
+main=${1%/}; shift
+# (Not an empty array plus a default: macOS ships bash 3.2, where an empty array trips set -u.)
+if [[ $# -eq 0 ]]; then prefixes=("You are collie's worker for this repo."); else prefixes=("$@"); fi
+idle_hours=${IDLE_HOURS:-2}
+
+log() { echo "$(date '+%F %T') $*"; }
+run() { if (( dry )); then log "  (dry-run) $*"; else "$@"; fi; }
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
+
+# Claude Code keeps a session's transcripts in ~/.claude/projects/<cwd with every non-alphanumeric char as ->.
+transcript_dir() { echo "$HOME/.claude/projects/$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"; }
+
+first_prompt() {
+  jq -r 'select(.type=="user" and (.message.content|type)=="string") | .message.content' "$1" 2>/dev/null | head -1
+}
+
+is_runner_prompt() {
+  local p
+  for p in "${prefixes[@]}"; do
+    [[ $1 == "$p"* ]] && return 0
+  done
+  return 1
+}
+
+# Changed or untracked entries, leaving out untracked symlinks (a node_modules linked by a worktree setup hook).
+dirty_count() {
+  local wt=$1 n=0 line path
+  while IFS= read -r line; do
+    path=${line:3}
+    [[ $line == '?? '* && -L $wt/${path%/} ]] && continue
+    n=$((n + 1))
+  done < <(git -C "$wt" status --porcelain 2>/dev/null)
+  echo $n
+}
+
+command -v jq >/dev/null || { log "jq is required"; exit 1; }
+[[ -d $main/.git ]] || { log "$main is not a git checkout"; exit 1; }
+
+now=$(date +%s)
+removed=0; kept=0
+
+shopt -s nullglob
+for wt in "$main"/.claude/worktrees/bridge-cse_*/; do
+  wt=${wt%/}
+  id=${wt##*bridge-cse_}
+  transcript=$(ls -t "$(transcript_dir "$wt")"/*.jsonl 2>/dev/null | head -1)
+  if [[ -n $transcript ]]; then
+    is_runner_prompt "$(first_prompt "$transcript")" || continue
+    age_h=$(( (now - $(mtime "$transcript")) / 3600 ))
+  else
+    # Spawned but never prompted: there is no transcript, so age it by the worktree.
+    age_h=$(( (now - $(mtime "$wt/.git")) / 3600 ))
+  fi
+  if (( age_h < idle_hours )); then log "skip $id: active ${age_h}h ago"; continue; fi
+
+  pids=$(pgrep -f "session-id cse_$id")
+  if [[ -n $pids ]]; then
+    log "stop $id (pid ${pids//$'\n'/ })"
+    run kill $pids
+  fi
+
+  dirty=$(dirty_count "$wt")
+  unpushed=$(git -C "$wt" rev-list --count HEAD --not --remotes 2>/dev/null || echo '?')
+  if [[ $dirty != 0 || $unpushed != 0 ]]; then
+    log "KEEP $id: dirty=$dirty unpushed=$unpushed"
+    kept=$((kept + 1)); continue
+  fi
+
+  branch=$(git -C "$wt" branch --show-current)
+  (( dry )) || sleep 2   # let the stopped process release the worktree
+  run git -C "$main" worktree unlock "$wt" 2>/dev/null
+  if run git -C "$main" worktree remove --force "$wt"; then
+    [[ $branch == worktree-bridge-* ]] && run git -C "$main" branch -D -q "$branch"
+    log "removed $id (${branch:-detached}, idle ${age_h}h)"
+    removed=$((removed + 1))
+  else
+    log "KEEP $id: git worktree remove failed"
+    kept=$((kept + 1))
+  fi
+done
+
+run git -C "$main" worktree prune
+log "done in $main: removed=$removed kept=$kept"
