@@ -43,7 +43,8 @@ rebase merge collie has to send the next task back to be rebased).
 - `delete_branch_on_merge` false: explain why it matters in one sentence and offer to turn it on with
   `gh repo edit OWNER/REPO --delete-branch-on-merge`. It changes the repository on GitHub: run it only if the person says yes
   (it needs admin rights on the repo; if it fails, tell them where it is: Settings → General → Pull Requests →
-  Automatically delete head branches).
+  Automatically delete head branches). With it on, merge PRs without `gh pr merge --delete-branch`: GitHub retargets a
+  stacked PR only when it deletes the merged branch itself; a branch deleted any other way makes it close the stacked PR.
 - Squash or rebase merges allowed: just mention that merging a stacked PR's base with a merge commit avoids a rebase.
   Do not change the allowed merge methods: that is the team's choice.
 
