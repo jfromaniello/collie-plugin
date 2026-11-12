@@ -43,14 +43,19 @@ repoint_routines() {
   local prompt="Use the RemoteTrigger tool to list the scheduled tasks (routines) and set job_config.ccr.environment_id to $new on those that:
 - have environment_id ${old:-<none>}, or
 - run in this repository ($repo, the folder $dir) and are failing or disabled because their environment is gone (last_run.failure_reason ROUTINE_RUN_FAILURE_REASON_ENVIRONMENT_UNAVAILABLE or ended_reason auto_disabled_env_not_found); set those enabled: true as well.
-In the update send the whole job_config.ccr (events and session_context as they are), changing only environment_id. Do not touch any other scheduled task. End with one line per task: name, previous environment, result."
+In the update send the whole job_config.ccr (events and session_context as they are), changing only environment_id. Do not touch any other scheduled task. End with one line per task: name, previous environment, result.
+Then a last line, exactly REPOINT_OK if every task that needed it was updated (HTTP 200) or none needed it, or REPOINT_FAILED followed by the reason."
+  # claude -p exits 0 even when the update was refused (for example, a permission prompt nobody can answer), so
+  # success is the REPOINT_OK line, not the exit code. Without it the old id stays in $env_file, and the next start
+  # of this script retries.
   local out
-  if out=$(cd "$dir" && claude -p --allowedTools=RemoteTrigger -- "$prompt" 2>&1); then
-    echo "$out" | sed "s/^/$(date '+%F %T') $name   /"
+  out=$(cd "$dir" && claude -p --allowedTools=RemoteTrigger -- "$prompt" 2>&1)
+  echo "$out" | sed "s/^/$(date '+%F %T') $name   /"
+  if echo "$out" | tail -3 | grep -qx 'REPOINT_OK'; then
     notify "New environment $new; scheduled tasks re-pointed."
   else
-    log "re-point failed: $out"
-    notify "New environment $new; could not re-point the scheduled tasks, do it by hand."
+    log "re-point failed"
+    notify "New environment $new; could not re-point the scheduled tasks. Run /collie:install-runner or update them by hand."
     return 1
   fi
 }
