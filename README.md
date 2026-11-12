@@ -28,7 +28,7 @@ Then, in the repo you want to connect: `/collie:install-runner`.
 
 `skills/install-runner/claude-rc-service <name> <repo-dir>` runs `claude rc --spawn worktree` inside a tmux session
 and blocks while it lives; launchd or systemd restart it when it exits. Every fresh `claude rc` registers a new
-environment id, so when the id changes the script runs a headless `claude -p` with the `RemoteTrigger` tool. That
+environment id, so when the id changes the script runs a headless `claude -p` whose only tool is `RemoteTrigger`, with permission checks skipped (nobody is there to approve the change). It counts as done only when that run ends with `REPOINT_OK`; otherwise the next start retries. That
 call re-points the scheduled tasks bound to the old environment. collie keeps working without changes, because the
 trigger id and token it holds belong to the scheduled task, not to the environment. On macOS it also keeps the
 machine awake on AC power.

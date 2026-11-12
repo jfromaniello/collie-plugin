@@ -49,7 +49,9 @@ Then a last line, exactly REPOINT_OK if every task that needed it was updated (H
   # success is the REPOINT_OK line, not the exit code. Without it the old id stays in $env_file, and the next start
   # of this script retries.
   local out
-  out=$(cd "$dir" && claude -p --allowedTools=RemoteTrigger -- "$prompt" 2>&1)
+  # Headless, nobody can answer the approval RemoteTrigger asks for before changing a routine, so this run skips
+  # permission checks. --tools leaves it RemoteTrigger and nothing else: no shell, no files, no other tools.
+  out=$(cd "$dir" && claude -p --tools RemoteTrigger --permission-mode bypassPermissions -- "$prompt" 2>&1)
   echo "$out" | sed "s/^/$(date '+%F %T') $name   /"
   if echo "$out" | tail -3 | grep -qx 'REPOINT_OK'; then
     notify "New environment $new; scheduled tasks re-pointed."
