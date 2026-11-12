@@ -31,6 +31,22 @@ changes their machine, and stop if they say no.
 - The repo is a git checkout on its default branch, without changes you would lose.
 - The `RemoteTrigger` tool is available to you (it ships with Claude Code and uses the claude.ai login).
 
+## 2b. Repository settings for stacked PRs
+
+collie lets a task that builds on another task of the same repo start from that task's branch while its PR is in
+review (stacked PRs). That works best when GitHub deletes a branch once its PR is merged (then it retargets the PR
+stacked on it to the default branch by itself), and when bases are merged with a merge commit (after a squash or a
+rebase merge collie has to send the next task back to be rebased).
+
+- Read the settings with `gh api repos/OWNER/REPO --jq '{delete_branch_on_merge, allow_merge_commit, allow_squash_merge, allow_rebase_merge}'`
+  (OWNER/REPO from `git remote get-url origin`). If `gh` is not installed or not logged in, skip this and say so.
+- `delete_branch_on_merge` false: explain why it matters in one sentence and offer to turn it on with
+  `gh repo edit OWNER/REPO --delete-branch-on-merge`. It changes the repository on GitHub: run it only if the person says yes
+  (it needs admin rights on the repo; if it fails, tell them where it is: Settings → General → Pull Requests →
+  Automatically delete head branches).
+- Squash or rebase merges allowed: just mention that merging a stacked PR's base with a merge commit avoids a rebase.
+  Do not change the allowed merge methods: that is the team's choice.
+
 ## 3. Install the service
 
 Pick a short name: `collie-<codebase>` (lowercase, letters, digits and dashes).
@@ -92,6 +108,8 @@ The trigger id is the scheduled task's id (`trig_…`, also in the trigger's Fir
 ## 6. Connect it in collie
 
 - `connect_runner` with the codebase, the trigger id and the token. Never repeat the token back in your messages.
+- Its answer has the codebase's `setup_checks` (older collie versions do not send them). Tell the person each warning in
+  plain words with its fix; what step 2b already settled needs no repeat.
 - If the project's `runner_dispatch_mode` is `off`, explain the modes (off: collie never fires; auto: it fires as soon
   as a goal has ready tasks; approval: a person approves each dispatch on the goal page). If the person is an owner and
   wants it, set it with `update_project` `runner_dispatch_mode`; otherwise tell them an owner changes it in collie,
@@ -100,6 +118,9 @@ The trigger id is the scheduled task's id (`trig_…`, also in the trigger's Fir
 ## 7. Check and hand over
 
 - `RemoteTrigger` `get` on the scheduled task: enabled, the right `environment_id`, `api_token_hint` present.
+- Sessions do not end when they run out of ready tasks: they wait for the goal's next one (`wait_for_task`, up to
+  90 minutes by default), so one session works a goal's tasks in this repo with the same worktree and context. The
+  hourly cleanup leaves them alone while they poll.
 - Summarize: service name and how to see its logs (the cleanup logs to `~/.local/state/claude-rc/<name>.cleanup.log`), the scheduled task's link, the runner in collie, the dispatch mode.
 - To try it: in collie, a goal with ready tasks in this codebase shows **Fire session** in its **Sessions** section;
   the session that starts shows up there with an **Open session** link.

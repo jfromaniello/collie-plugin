@@ -1,6 +1,6 @@
 {
   "name": "collie",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Work collie tasks from Claude Code and connect a repo as a collie runner on your machine.",
   "author": { "name": "José F. Romaniello", "url": "https://github.com/jfromaniello" },
   "homepage": "https://collies.sh",
