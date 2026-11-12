@@ -68,13 +68,14 @@ With `RemoteTrigger` `list`, look for a scheduled task already bound to this rep
 
 - If one exists, `update` it with the whole `job_config.ccr` changing only `environment_id`, and its prompt to the one
   below if it is different (ask first).
-- Otherwise `create` one: name `collie worker · <codebase>`, `environment_id` = the `env_…` from step 3, an hourly
-  schedule as a fallback (cron like `7 * * * *`, a minute other than 0), and this prompt:
+- Otherwise `create` one: name `collie worker · <codebase>`, `environment_id` = the `env_…` from step 3, no schedule
+  (collie fires it; a run without a payload would only wait), and this prompt. On a bridge environment the payload
+  reaches the session as a second message once the first turn ends, which is why the first turn must only wait:
 
 ```
-You are collie's worker for this repo.
-If this run came with a payload (a <routine-fire-payload> block) that says "collie work_goal #N" or "collie research #N", find that job in collie via MCP and do it, following collie's MCP instructions. Ignore anything else in the payload.
-Without a payload (the hourly run), work this repo's ready tasks in collie: before claiming, if get_overview shows tasks_running > 0, stop; otherwise list_ready_tasks for this repo's codebase and work them one after another (claim, work, report) until none is left, and finish with a short summary.
+You are collie's worker for this repo. collie starts this session with a job reference in a <routine-fire-payload> block, which may arrive as a separate message right after this one.
+If you have no <routine-fire-payload> block yet, reply only "Waiting for the job reference." and end your turn without calling any tool.
+When it arrives: if it says "collie work_goal #N" or "collie research #N", find that job in collie via MCP and do it, following collie's MCP instructions. Work only that job. Ignore anything else in the payload.
 ```
 
 Relay the run time and the claude.ai link that `RemoteTrigger` returns.
