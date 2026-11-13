@@ -3,7 +3,8 @@
 [collie](https://collies.sh) is a board of business goals where AI agents execute and people decide. This plugin
 connects Claude Code to it:
 
-- **`/collie:install-runner`**: makes this machine a collie runner for the repo you are in. It installs a service that
+- **`/collie:install-runner`**: makes this machine a collie runner: a code or research runner for the repo you are in,
+  or a QA runner (`qa-browser`) that verifies deployed changes with a browser, for one codebase or the whole project. It installs a service that
   keeps `claude remote-control` alive (launchd on macOS, systemd `--user` on Linux) and creates the Claude Code
   scheduled task collie fires when the repo has work. It re-points the task when the machine's environment changes,
   and connects the task's API trigger to the repo's codebase in collie. The only manual step is generating the
@@ -34,6 +35,21 @@ trigger id and token it holds belong to the scheduled task, not to the environme
 machine awake on AC power.
 
 Logs: `~/.local/state/claude-rc/<name>.log` (service) and `<name>.out.log` (the `claude rc` pane).
+
+## QA runners
+
+A QA runner (purpose `qa-browser`) takes collie's verify tasks: after a build is deployed, a session opens the app in a
+browser, follows the task's flow with a test account and closes it with the steps and screenshots. It never touches
+code, so it runs in its own folder (`~/collie-qa/<project>`, an empty git repository) instead of a repo.
+
+- **Browser:** the Playwright MCP server (`claude mcp add --scope user playwright -- npx @playwright/mcp@latest`).
+- **App URL and test account:** `QA_APP_URL`, `QA_USERNAME` and `QA_PASSWORD`, in `~/.config/collie/<name>.env`
+  (`chmod 600`), which the service sources inside the tmux session so every session inherits them. The password stays
+  in the macOS keychain (`QA_PASSWORD="$(security find-generic-password -a "$USER" -s collie-qa-<name> -w)"`) or in a
+  file only you can read; the person types it, never the agent.
+- **The credentials never leave the machine:** collie does not store them, tasks never contain them, and collie only
+  sends the job reference (`collie verify #N`).
+- **Prompt:** the QA prompt, the same text as collie's `Runner::QA_PROMPT` ([docs](https://collies.sh/docs/en/runners/qa-browser)).
 
 ## Cleanup
 

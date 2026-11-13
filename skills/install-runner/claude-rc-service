@@ -12,6 +12,7 @@
 # ENVIRONMENT_UNAVAILABLE. When the id changes, a headless `claude -p` re-points them (RemoteTrigger tool) to the new
 # one. The trigger id and token collie holds belong to the scheduled task, so collie needs no change.
 # Logs: ~/.local/state/claude-rc/<name>.out.log (the pane) and the service log.
+# Optional per-runner variables: ~/.config/collie/<name>.env (see below), never sent to collie.
 
 set -u
 name=$1
@@ -79,8 +80,12 @@ fi
 
 if ! tmux has-session -t "$name" 2>/dev/null; then
   log "starting in $dir"
+  # A runner's own variables (a QA runner's QA_APP_URL, QA_USERNAME, QA_PASSWORD) live in an optional env file on
+  # this machine, sourced inside the tmux session so claude rc and every session it spawns inherit them. They never go
+  # to collie. The file may read secrets from the keychain: QA_PASSWORD="$(security find-generic-password ... -w)".
+  runner_env="$HOME/.config/collie/$name.env"
   tmux new-session -d -s "$name" -c "$dir" \
-    "claude rc --spawn worktree; echo \"\$(date '+%F %T') claude rc exited with \$?\" >> '$out_log'"
+    "if [ -f '$runner_env' ]; then set -a; . '$runner_env'; set +a; fi; claude rc --spawn worktree; echo \"\$(date '+%F %T') claude rc exited with \$?\" >> '$out_log'"
   tmux pipe-pane -o -t "$name" "cat >> '$out_log'"
 else
   log "adopting the existing tmux session"
