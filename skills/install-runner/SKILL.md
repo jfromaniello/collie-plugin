@@ -24,7 +24,8 @@ Ask which kind of runner this is; collie only wakes a runner whose purpose match
 
 A runner is something collie can wake: a Claude Code scheduled task (wake mode `routine`) or an agent that is not
 Claude Code woken with a signed webhook (wake mode `webhook`). This skill only sets up the first kind. An agent that
-polls collie over MCP is not a runner and needs no install: it just calls `list_ready_tasks` and `claim_task`.
+polls collie over MCP is not a runner and needs no install: if the person wants that instead, give them the prompt
+of its purpose from **Polling instead of a runner** at the end of this file and stop.
 
 This skill's files are in `${CLAUDE_SKILL_DIR}`: `claude-rc-service` (the service script), `launchd.plist` and
 `systemd.service` (its templates), `claude-worktree-cleanup` (the hourly cleanup) and `cleanup.launchd.plist`,
@@ -191,3 +192,42 @@ The trigger id is the scheduled task's id (`trig_…`, also in the trigger's Fir
   released (its build was deployed); to try it by hand, ask a QA session to run `list_ready_tasks` with
   `purpose: "qa-browser"`.
 - This machine has to stay on and online for sessions to start here; the service keeps it awake on AC power (macOS).
+
+## Polling instead of a runner
+
+An agent does not need a runner to work collie's tasks. A runner exists only so collie can wake someone; an agent
+that asks for work on its own just needs collie's MCP server and the prompt of its purpose. It takes ready tasks
+with `list_ready_tasks` and `claim_task` (with its `purpose`), and `wait_for_task(goal_id, codebase, purpose)` while
+it works a goal. Do not call `connect_runner` for it: a runner is only a routine or a webhook.
+
+- Without a runner to wake, collie records no dispatch: the task stays ready for whoever asks.
+- `purpose` and `codebase` are filters the agent declares, not a security boundary.
+- collie shows the agent in **Settings → Runners → Polling agents** with no registration: person, OAuth client,
+  purpose, codebase (or the whole project) and when it was last seen.
+
+Use these prompts as they are (they are collie's `Runner::POLLING_PROMPTS`; the routine prompts wait for a job
+reference and would never start on their own). Details: https://collies.sh/docs/en/runners#polling-agents-without-a-runner
+
+### Code (`purpose: code`), run in the codebase's repo
+
+```text
+You are collie's worker for this repo. Nobody wakes you: you ask collie for work yourself.
+Find this repo's codebase in collie via MCP (list_codebases, by repo_full_name). Call list_ready_tasks with purpose code and that codebase, claim the first task with purpose code, and work it following collie's MCP instructions. When you close it and its goal has more open tasks here, call wait_for_task with that goal_id, the codebase and purpose code, and keep working while it answers ready.
+When nothing is ready, wait a few minutes and call list_ready_tasks again. Take only collie's tasks for this repo.
+```
+
+### QA with browser (`purpose: qa-browser`), with the browser and test account of step 2a
+
+```text
+You are collie's QA agent for this project: you verify changes in the running app with a browser, and you never change code. Nobody wakes you: you ask collie for work yourself.
+Call list_ready_tasks in collie via MCP with purpose qa-browser and claim the first task with purpose qa-browser, following collie's MCP instructions. Open its verify_target in the browser (relative paths start at $QA_APP_URL), sign in with the test account from this machine ($QA_USERNAME and $QA_PASSWORD), do what the task says and compare with verify_expected. Take the screenshots verify_evidence asks for, upload them with create_upload_url, and close with report_progress: verify_result passed (kind done) or failed (kind failed), verify_steps, verify_observed and image_ids. Never write the credentials into collie, a task, a step or a screenshot.
+Then ask again; when nothing is ready, wait a few minutes and call list_ready_tasks again.
+```
+
+### Research (`purpose: research`)
+
+```text
+You are collie's research agent for this project: you answer read-only questions and you never change code. Nobody wakes you: you ask collie for work yourself.
+Call list_ready_tasks in collie via MCP with purpose research, claim the first task with purpose research, answer it following collie's MCP instructions and close it with a short summary that answers the question.
+Then ask again; when nothing is ready, wait a few minutes and call list_ready_tasks again.
+```
