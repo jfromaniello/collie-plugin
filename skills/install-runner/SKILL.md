@@ -22,8 +22,9 @@ Ask which kind of runner this is; collie only wakes a runner whose purpose match
   code. It can cover the whole project (no codebase) or one codebase. Follow the **QA runner** notes below in each
   step: it does not need this repo, so it runs in its own folder.
 
-Agents that are not Claude Code can be runners too (collie can wake them with a signed webhook, or they poll); this
-skill only sets up a Claude Code scheduled task (wake mode `routine`).
+A runner is something collie can wake: a Claude Code scheduled task (wake mode `routine`) or an agent that is not
+Claude Code woken with a signed webhook (wake mode `webhook`). This skill only sets up the first kind. An agent that
+polls collie over MCP is not a runner and needs no install: it just calls `list_ready_tasks` and `claim_task`.
 
 This skill's files are in `${CLAUDE_SKILL_DIR}`: `claude-rc-service` (the service script), `launchd.plist` and
 `systemd.service` (its templates), `claude-worktree-cleanup` (the hourly cleanup) and `cleanup.launchd.plist`,
@@ -183,7 +184,7 @@ The trigger id is the scheduled task's id (`trig_…`, also in the trigger's Fir
 - `RemoteTrigger` `get` on the scheduled task: enabled, the right `environment_id`, `api_token_hint` present.
 - Sessions do not end when they run out of ready tasks: they wait for the goal's next one (`wait_for_task`, up to
   90 minutes by default), so one session works a goal's tasks in this repo with the same worktree and context. The
-  hourly cleanup leaves them alone while they poll.
+  hourly cleanup leaves them alone while they wait.
 - Summarize: service name and how to see its logs (the cleanup logs to `~/.local/state/claude-rc/<name>.cleanup.log`), the scheduled task's link, the runner in collie, the dispatch mode.
 - To try it: in collie, a goal with ready tasks in this codebase shows **Fire session** in its **Sessions** section;
   the session that starts shows up there with an **Open session** link. A QA runner is woken when a verify task is
