@@ -1,6 +1,6 @@
 ---
 name: install-runner
-description: Connect this machine to collie as a runner, for this repo (code or research) or as a QA runner with a browser (qa-browser, for one codebase or the whole project). Installs a service that keeps `claude remote-control` alive (launchd on macOS, systemd --user on Linux), creates the Claude Code scheduled task collie fires, and connects its API trigger in collie with its purpose. Use when the person asks to install, connect or repair a collie runner, including a QA or browser runner.
+description: Connect this machine to collie as a runner, for this repo (code or research) or as a QA runner with a browser (qa-browser, for one codebase or the whole project). Optionally gives the agents their own GitHub identity (a GitHub App per role). Installs a service that keeps `claude remote-control` alive (launchd on macOS, systemd --user on Linux), creates the Claude Code scheduled task collie fires, and connects its API trigger in collie with its purpose. Use when the person asks to install, connect or repair a collie runner, including a QA or browser runner.
 disable-model-invocation: true
 ---
 
@@ -29,7 +29,8 @@ of its purpose from **Polling instead of a runner** at the end of this file and 
 
 This skill's files are in `${CLAUDE_SKILL_DIR}`: `claude-rc-service` (the service script), `launchd.plist` and
 `systemd.service` (its templates), `claude-worktree-cleanup` (the hourly cleanup) and `cleanup.launchd.plist`,
-`cleanup.systemd.service` and `cleanup.systemd.timer` (its templates). Tell the person what you are about to do before each step that
+`cleanup.systemd.service` and `cleanup.systemd.timer` (its templates), and `agent-github` and `gh-wrapper` (the agents'
+own GitHub identity, step 2c). Tell the person what you are about to do before each step that
 changes their machine, and stop if they say no.
 
 ## 1. Check collie and find the codebase
@@ -96,6 +97,44 @@ rebase merge collie has to send the next task back to be rebased).
   stacked PR only when it deletes the merged branch itself; a branch deleted any other way makes it close the stacked PR.
 - Squash or rebase merges allowed: just mention that merging a stacked PR's base with a merge commit avoids a rebase.
   Do not change the allowed merge methods: that is the team's choice.
+
+## 2c. Optional: the agents' own GitHub identity
+
+Skip this step for a QA runner, and when `~/.local/bin/agent-github status` already shows a coder App (it is set up
+once per machine, not per repo: then only check that the App is installed on this repo's owner, item 5).
+
+By default the agents push and open PRs with the person's own GitHub login, so the PRs are theirs and GitHub does not
+let them review or approve them. Offer to give the agents their own identity: a GitHub App the person owns per role,
+`coder` (pushes and opens PRs) and optionally `reviewer` (reviews PRs). Their work then shows up as `<app>[bot]` and
+the person reviews it like anyone else's. It is optional: say it in two sentences and continue to step 3 if they
+do not want it.
+
+It only applies to the runner's sessions (the worktrees `claude rc --spawn worktree` creates,
+`<repo>/.claude/worktrees/bridge-*`): ~/.gitconfig includes the App's identity there, and a `gh` wrapper uses the App's
+token there. Everywhere else, and in repositories where the App is not installed, git and gh keep the person's login.
+Nothing changes in collie.
+
+1. Needs `git`, `gh`, `curl`, `openssl`, `jq` and `python3`. Ask before installing what is missing.
+2. Copy `agent-github` to `~/.local/bin/agent-github` and `gh-wrapper` to `~/.local/bin/gh` (`chmod +x`; same rule as
+   in step 3 if a different file is already there). The wrapper finds the real `gh` further down the PATH, so
+   `~/.local/bin` must come before it: the service script puts it first; check the person's login shell with
+   `bash -lc 'command -v gh'` and `zsh -lc 'command -v gh'` (if not, tell them to add `~/.local/bin` to the front of
+   PATH in their shell profile).
+3. Create the coder App: `~/.local/bin/agent-github create coder`. It opens the browser on a local page that sends a
+   manifest with the coder's permissions to GitHub; the person checks the name there (default `<their login>-coder`,
+   it must be unique on GitHub) and clicks **Create GitHub App**. GitHub comes back to the local page and the App's id
+   and private key are saved in `~/.config/agent-github` (the key never passes through the chat). Run it in the
+   background or with a long timeout: it waits up to 10 minutes for the person. Options: `--name NAME`,
+   `--org ORG` (the App belongs to an organization instead), `--private` (only installable on its owner's account;
+   by default it can be installed on any account, so the person can add it to organizations they administer).
+   If GitHub created the App but the page it came back to did not load, the code is in that URL:
+   `agent-github convert coder <code>`. To use an App that already exists: `agent-github setup coder <app-id> <key.pem>`.
+4. The command then opens the App's installation page: the person installs it on the account or organization that
+   owns this repo (and any other repos the agents work on), choosing the repositories.
+5. Check it: `AGENT_GITHUB_REPO=OWNER/REPO ~/.local/bin/agent-github token coder >/dev/null && echo ok` (OWNER/REPO of
+   this repo) and `~/.local/bin/agent-github status`.
+6. Reviewer (optional): `agent-github create reviewer` the same way. A session works as the reviewer after
+   `agent-github use reviewer` in its worktree; until a session does, the reviewer App is unused.
 
 ## 3. Install the service
 

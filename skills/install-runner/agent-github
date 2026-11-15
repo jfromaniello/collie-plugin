@@ -1,0 +1,393 @@
+#!/bin/bash
+# Gives the runner's coding agents their own GitHub identity: a GitHub App per role (coder, reviewer) that the person
+# owns, so the agents' commits, pushes, PRs and reviews show up as <app>[bot] instead of as the person. Then the person
+# can review and approve their agents' PRs (GitHub never lets a PR's author review it).
+#
+# It only applies inside the worktrees `claude rc --spawn worktree` creates (.git/worktrees/bridge-*): ~/.gitconfig
+# includes this identity there, and the gh wrapper uses the App's token there. Everywhere else git and gh keep the
+# person's own login, and so do agents in repositories where the App is not installed.
+#
+#   agent-github create <role> [--name NAME] [--org ORG] [--private]
+#                       Creates the App for a role (coder | reviewer) with GitHub's manifest flow: opens the browser,
+#                       the person confirms the name and creates it, GitHub comes back to a local port and the App's id
+#                       and private key are saved here. Then it opens the page to install it.
+#   agent-github convert <role> <code>
+#                       Finishes a create by hand, with the code= of the URL GitHub came back to.
+#   agent-github setup <role> <app-id> <private-key.pem>
+#                       Uses an App that already exists.
+#   agent-github install       Adds the includeIf to ~/.gitconfig (idempotent).
+#   agent-github status        What is set up and what applies in the current directory.
+#   agent-github use [role]    Makes the current agent worktree work as that role (default coder).
+#   agent-github token [role]  An installation token for the current repo's owner (cached until 10 minutes before it
+#                              expires). Used by the gh wrapper.
+#   agent-github credential get  git credential helper (configured by the include).
+#   agent-github active        Exit 0 when the cwd is an agent worktree with an App set up for its role.
+#   agent-github role          The role of the cwd: the file agent-github-role in the worktree's git dir, or coder.
+#
+# Files: ~/.config/agent-github/<role>.env (APP_ID, APP_SLUG, BOT_ID), <role>.pem and gitconfig (the include);
+# ~/.cache/agent-github/<role>/<owner>.{installation,token}. Needs curl, openssl, jq and git (python3 for create).
+
+set -euo pipefail
+
+self="$HOME/.local/bin/agent-github"
+config_dir="$HOME/.config/agent-github"
+cache_dir="$HOME/.cache/agent-github"
+api=${AGENT_GITHUB_API:-https://api.github.com}
+web=${AGENT_GITHUB_WEB:-https://github.com}
+include_key='includeIf.gitdir:**/worktrees/bridge-*.path' # no trailing slash: with one it misses linked worktrees
+worktree_pattern='*/.git/worktrees/bridge-*'               # the same, for the git dir of the cwd
+
+die() { echo "agent-github: $*" >&2; exit 1; }
+
+valid_role() { [[ ${1:-} == coder || ${1:-} == reviewer ]] || die "the role is coder or reviewer"; }
+
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+# A JWT signed with the App's private key (valid 9 minutes, issued a minute ago against clock drift).
+jwt() {
+  local role=$1 now header payload unsigned sig
+  # shellcheck disable=SC1090
+  source "$config_dir/$role.env"
+  now=$(date +%s)
+  header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+  payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$APP_ID" | b64url)
+  unsigned="$header.$payload"
+  sig=$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign "$config_dir/$role.pem" -binary | b64url)
+  printf '%s.%s' "$unsigned" "$sig"
+}
+
+# curl against the API; fails with GitHub's message on a non-2xx.
+call() {
+  local out code
+  out=$(curl -sS -w '\n%{http_code}' -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@")
+  code=${out##*$'\n'}
+  out=${out%$'\n'*}
+  [[ $code == 2* ]] || die "GitHub answered $code: $(jq -r '.message? // .' <<<"$out" 2>/dev/null || echo "$out")"
+  printf '%s' "$out"
+}
+
+# owner/repo of the cwd's origin (or AGENT_GITHUB_REPO).
+current_repo() {
+  if [[ -n ${AGENT_GITHUB_REPO:-} ]]; then echo "$AGENT_GITHUB_REPO"; return; fi
+  git remote get-url origin 2>/dev/null | sed -E 's#^(git@github\.com:|ssh://git@github\.com/|https://([^@/]+@)?github\.com/)##; s#\.git$##' \
+    | grep -E '^[^/]+/[^/]+$' || die "no GitHub origin in $(pwd)"
+}
+
+role() {
+  local git_dir
+  git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || { echo coder; return; }
+  if [[ -s $git_dir/agent-github-role ]]; then tr -d '[:space:]' <"$git_dir/agent-github-role"; else echo coder; fi
+}
+
+agent_worktree() {
+  local git_dir
+  git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  # shellcheck disable=SC2053
+  [[ $git_dir == $worktree_pattern ]]
+}
+
+active() { agent_worktree && [[ -f $config_dir/$(role).env ]]; }
+
+token() {
+  local role=${1:-$(role)} repo owner dir inst tok expires auth
+  [[ -f $config_dir/$role.env ]] || die "no App set up for role $role (agent-github create $role)"
+  repo=$(current_repo)
+  owner=${repo%%/*}
+  dir="$cache_dir/$role"
+  mkdir -p "$dir" && chmod 700 "$cache_dir" "$dir"
+
+  if [[ -s $dir/$owner.token ]]; then
+    expires=$(jq -r .expires_at "$dir/$owner.token")
+    if (( $(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$expires" +%s 2>/dev/null || date -u -d "$expires" +%s) - $(date +%s) > 600 )); then
+      jq -r .token "$dir/$owner.token"
+      return
+    fi
+  fi
+
+  auth="Authorization: Bearer $(jwt "$role")"
+  inst=$(cat "$dir/$owner.installation" 2>/dev/null || true)
+  if [[ -z $inst ]]; then
+    inst=$(call -H "$auth" "$api/repos/$repo/installation" | jq -r .id) || die "the $role App is not installed on $repo"
+    echo "$inst" >"$dir/$owner.installation"
+  fi
+  tok=$(call -X POST -H "$auth" "$api/app/installations/$inst/access_tokens") || {
+    rm -f "$dir/$owner.installation" # uninstalled and installed again: look it up next time
+    exit 1
+  }
+  umask 077
+  jq '{token, expires_at}' <<<"$tok" >"$dir/$owner.token.$$" && mv "$dir/$owner.token.$$" "$dir/$owner.token"
+  jq -r .token <<<"$tok"
+}
+
+# git credential helper protocol: only answers get, for github.com over https, in an active agent worktree. When it
+# says nothing (not an agent worktree, the App not installed on that owner, GitHub unreachable), git asks the next
+# helper: the person's own.
+credential() {
+  [[ ${1:-} == get ]] || exit 0
+  local protocol="" host="" tok
+  while IFS='=' read -r key value; do
+    [[ -z $key ]] && break
+    case $key in protocol) protocol=$value ;; host) host=$value ;; esac
+  done
+  [[ $protocol == https && $host == github.com ]] || exit 0
+  active || exit 0
+  tok=$(token 2>/dev/null) || exit 0
+  printf 'username=x-access-token\npassword=%s\n' "$tok"
+}
+
+# The credential helpers configured outside the include (system, global), to keep them as the fallback after ours.
+existing_helpers() {
+  {
+    git config --get-all credential.helper 2>/dev/null || true
+    git config --get-all credential.https://github.com.helper 2>/dev/null || true
+  } | grep -v -e '^$' -e 'agent-github' | awk '!seen[$0]++'
+}
+
+# The git config the agent worktrees include: the coder App's identity for commits, this script as the first
+# credential helper for github.com (the empty value clears the list, the person's helpers go back after it), and SSH
+# remotes sent over https so pushes use the token. Empty until the coder App is set up.
+write_gitconfig() {
+  mkdir -p "$config_dir" && chmod 700 "$config_dir"
+  {
+    echo "# Written by agent-github. ~/.gitconfig includes it only in agent worktrees (.git/worktrees/bridge-*)."
+    if [[ -f $config_dir/coder.env ]]; then
+      # shellcheck disable=SC1091
+      source "$config_dir/coder.env"
+      printf '[user]\n\tname = %s[bot]\n\temail = %s+%s[bot]@users.noreply.github.com\n' "$APP_SLUG" "$BOT_ID" "$APP_SLUG"
+      printf '[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n'
+      printf '[credential "https://github.com"]\n\thelper =\n\thelper = !%s credential\n' "$self"
+      existing_helpers | while IFS= read -r helper; do printf '\thelper = %s\n' "$helper"; done
+      printf '[url "https://github.com/"]\n\tinsteadOf = git@github.com:\n\tinsteadOf = ssh://git@github.com/\n'
+    fi
+  } >"$config_dir/gitconfig"
+}
+
+install_include() {
+  [[ -f $config_dir/gitconfig ]] || write_gitconfig
+  if ! git config --global --get-all "$include_key" >/dev/null 2>&1; then
+    git config --global --add "$include_key" "$config_dir/gitconfig"
+    echo "~/.gitconfig includes $config_dir/gitconfig in agent worktrees"
+  fi
+}
+
+# Saves an App for a role: its id and key are in place already; reads its slug and bot user from GitHub.
+save_app() {
+  local role=$1 app_id=$2 slug bot_id="" i
+  printf 'APP_ID=%s\n' "$app_id" >"$config_dir/$role.env"
+  slug=$(call -H "Authorization: Bearer $(jwt "$role")" "$api/app" | jq -r .slug)
+  for i in 1 2 3 4 5; do # a brand new App's bot user can take a moment to exist
+    bot_id=$(call "$api/users/$slug%5Bbot%5D" 2>/dev/null | jq -r .id) && break
+    sleep $((i * 2))
+  done
+  [[ -n $bot_id ]] || die "GitHub does not show the user $slug[bot] yet; run agent-github setup $role $app_id $config_dir/$role.pem again in a minute"
+  printf 'APP_ID=%s\nAPP_SLUG=%s\nBOT_ID=%s\n' "$app_id" "$slug" "$bot_id" >"$config_dir/$role.env"
+  chmod 600 "$config_dir/$role.env"
+  rm -rf "${cache_dir:?}/$role"
+  write_gitconfig
+  install_include
+  echo "$role: $slug[bot] (App $app_id)"
+}
+
+setup() {
+  local role=${1:-} app_id=${2:-} key=${3:-}
+  valid_role "$role"
+  [[ -n $app_id && -f $key ]] || die "usage: agent-github setup $role <app-id> <private-key.pem>"
+  mkdir -p "$config_dir" && chmod 700 "$config_dir"
+  [[ $key -ef $config_dir/$role.pem ]] || install -m 600 "$key" "$config_dir/$role.pem"
+  save_app "$role" "$app_id"
+  installations "$role"
+}
+
+installations() {
+  local role=$1 list
+  # shellcheck disable=SC1090
+  source "$config_dir/$role.env"
+  list=$(call -H "Authorization: Bearer $(jwt "$role")" "$api/app/installations" | jq -r '[.[].account.login] | join(", ")')
+  echo "installed on: ${list:-nowhere yet}"
+  echo "install it (or change its repositories): $web/apps/$APP_SLUG/installations/new"
+}
+
+# What each role may do. The coder pushes (workflows too: a branch that edits .github/workflows needs it) and opens
+# PRs; the reviewer reads the code and reviews PRs. Both read CI.
+permissions() {
+  case $1 in
+    coder) echo '{"metadata":"read","contents":"write","pull_requests":"write","workflows":"write","actions":"read","checks":"read","statuses":"read"}' ;;
+    reviewer) echo '{"metadata":"read","contents":"read","pull_requests":"write","actions":"read","checks":"read","statuses":"read"}' ;;
+  esac
+}
+
+open_url() {
+  if command -v open >/dev/null; then open "$1"
+  elif command -v xdg-open >/dev/null; then xdg-open "$1" >/dev/null 2>&1
+  fi
+}
+
+# Exchanges the code GitHub came back with for the App's id and private key, and saves them.
+convert() {
+  local role=${1:-} code=${2:-} app
+  valid_role "$role"
+  [[ -n $code ]] || die "usage: agent-github convert $role <code>"
+  app=$(call -X POST "$api/app-manifests/$code/conversions")
+  finish_create "$role" "$app"
+}
+
+finish_create() {
+  local role=$1 app=$2
+  mkdir -p "$config_dir" && chmod 700 "$config_dir"
+  (umask 077 && jq -r .pem <<<"$app" >"$config_dir/$role.pem")
+  save_app "$role" "$(jq -r .id <<<"$app")"
+  # shellcheck disable=SC1090
+  source "$config_dir/$role.env"
+  echo "Now install it on the accounts and repositories its agents work on: $web/apps/$APP_SLUG/installations/new"
+  open_url "$web/apps/$APP_SLUG/installations/new"
+}
+
+# GitHub's manifest flow: a local page posts the manifest to GitHub, the person creates the App there, and GitHub
+# redirects to this machine with a code that is exchanged for the App's id and private key.
+create() {
+  local role=${1:-} name="" org="" public=true login port_file out work
+  valid_role "$role"
+  shift
+  while (($#)); do
+    case $1 in
+      --name) name=$2; shift 2 ;;
+      --org) org=$2; shift 2 ;;
+      --private) public=false; shift ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  command -v python3 >/dev/null || die "create needs python3; or create the App by hand and use agent-github setup"
+  if [[ -z $name ]]; then
+    login=$(env -u GH_TOKEN gh api user --jq .login 2>/dev/null || true)
+    name="${login:-my}-$role"
+  fi
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' RETURN
+  port_file="$work/port"
+  out="$work/app.json"
+  python3 -I - "$role" "$name" "$org" "$public" "$(permissions "$role")" "$port_file" "$out" "$web" "$api" <<'PY' &
+import html, http.server, json, secrets, sys, time, urllib.parse, urllib.request
+role, name, org, public, perms, port_file, out, web, api = sys.argv[1:]
+state = secrets.token_urlsafe(16)
+target = f"{web}/organizations/{org}/settings/apps/new" if org else f"{web}/settings/apps/new"
+descriptions = {
+    "coder": "Coding agent: pushes branches and opens pull requests.",
+    "reviewer": "Code review agent: reviews pull requests.",
+}
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def page(self, body, code=200):
+        data = f"<!doctype html><meta charset=utf-8><title>{html.escape(name)}</title><body style='font:16px system-ui;max-width:40em;margin:3em auto'>{body}</body>".encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        url = urllib.parse.urlparse(self.path)
+        if url.path == "/":
+            manifest = {
+                "name": name,
+                "url": f"{web}/{org}" if org else web,
+                "description": descriptions[role],
+                "redirect_url": f"http://127.0.0.1:{self.server.server_port}/callback",
+                "public": public == "true",
+                "default_permissions": json.loads(perms),
+                "default_events": [],
+                "hook_attributes": {"url": "https://example.com/unused", "active": False},
+            }
+            self.page(
+                f"<p>Creating the GitHub App <b>{html.escape(name)}</b> for your {role} agents. GitHub shows it next: "
+                f"change the name there if it is taken, then <b>Create GitHub App</b>.</p>"
+                f"<form id=f method=post action='{html.escape(target)}?state={state}'>"
+                f"<input type=hidden name=manifest value='{html.escape(json.dumps(manifest), quote=True)}'>"
+                f"<button>Continue to GitHub</button></form><script>document.getElementById('f').submit()</script>"
+            )
+        elif url.path == "/callback":
+            query = urllib.parse.parse_qs(url.query)
+            if query.get("state", [""])[0] != state or "code" not in query:
+                return self.page("<p>This is not the answer to this request. Run the command again.</p>", 400)
+            request = urllib.request.Request(
+                f"{api}/app-manifests/{query['code'][0]}/conversions", method="POST",
+                headers={"Accept": "application/vnd.github+json"})
+            try:
+                with urllib.request.urlopen(request) as response:
+                    app = json.load(response)
+            except Exception as error:
+                self.page(f"<p>GitHub did not return the App: {html.escape(str(error))}</p>", 502)
+                raise SystemExit(1)
+            with open(out, "w") as f:
+                json.dump(app, f)
+            self.page(f"<p>Created <b>{html.escape(app['slug'])}</b>. Back in the terminal, the next step is installing it.</p>")
+            self.server.done = True
+        else:
+            self.page("Not found", 404)
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+server.done = False
+server.timeout = 5
+deadline = time.time() + 600
+with open(port_file, "w") as f:
+    f.write(str(server.server_port))
+while not server.done and time.time() < deadline:
+    server.handle_request()
+PY
+  local pid=$! i
+  for i in {1..50}; do [[ -s $port_file ]] && break; sleep 0.1; done
+  [[ -s $port_file ]] || die "could not start the local page"
+  local url="http://127.0.0.1:$(cat "$port_file")/"
+  echo "Opening $url: it takes you to GitHub to create the $role App ($name). Waiting up to 10 minutes..."
+  open_url "$url"
+  wait "$pid" || true
+  if [[ ! -s $out ]]; then
+    die "the App was not created here. If GitHub created it and the page did not load, run: agent-github convert $role <the code= value of that URL>"
+  fi
+  chmod 600 "$out"
+  finish_create "$role" "$(cat "$out")"
+}
+
+use() {
+  local role=${1:-coder} git_dir
+  valid_role "$role"
+  agent_worktree || die "not an agent worktree: $(pwd)"
+  git_dir=$(git rev-parse --absolute-git-dir)
+  if [[ $role == coder ]]; then rm -f "$git_dir/agent-github-role"; else echo "$role" >"$git_dir/agent-github-role"; fi
+  echo "this worktree works as $role$([[ -f $config_dir/$role.env ]] || echo " (no App for it yet: git and gh use your login)")"
+}
+
+status() {
+  local r
+  for r in coder reviewer; do
+    if [[ -f $config_dir/$r.env ]]; then
+      # shellcheck disable=SC1090
+      (source "$config_dir/$r.env"; echo "$r: $APP_SLUG[bot] (App $APP_ID)")
+    else
+      echo "$r: not set up"
+    fi
+  done
+  git config --global --get-all "$include_key" >/dev/null 2>&1 || echo "~/.gitconfig: missing the include (agent-github install)"
+  [[ $(command -v gh) == "$HOME/.local/bin/gh" ]] || echo "gh: $(command -v gh || echo none) comes first in PATH, not the wrapper in ~/.local/bin"
+  if active; then echo "here: agent worktree, role $(role): $(sed -n 's/^APP_SLUG=//p' "$config_dir/$(role).env")[bot]"
+  elif agent_worktree; then echo "here: agent worktree, role $(role) has no App: your own login"
+  else echo "here: not an agent worktree: your own login"
+  fi
+}
+
+cmd=${1:-status}
+shift || true
+case $cmd in
+  create) create "$@" ;;
+  convert) convert "$@" ;;
+  setup) setup "$@" ;;
+  install) install_include ;;
+  status) status ;;
+  use) use "$@" ;;
+  token) token "$@" ;;
+  credential) credential "$@" ;;
+  active) active ;;
+  role) role ;;
+  *) die "unknown command $cmd (create, convert, setup, install, status, use, token, credential, active, role)" ;;
+esac
