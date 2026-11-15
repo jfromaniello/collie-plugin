@@ -38,6 +38,23 @@ machine awake on AC power.
 
 Logs: `~/.local/state/claude-rc/<name>.log` (service) and `<name>.out.log` (the `claude rc` pane).
 
+## The agents' own GitHub identity (optional)
+
+By default a runner's agents push and open PRs with your GitHub login, so the PRs are yours and GitHub does not let
+you review or approve them. `install-runner` can give them their own identity instead: a GitHub App you own per role,
+`coder` and optionally `reviewer`. Their commits, PRs and reviews then show up as `<app>[bot]`.
+
+- `skills/install-runner/agent-github create coder` creates the App with GitHub's manifest flow: a local page sends
+  GitHub the manifest with the role's permissions, you confirm the name and create it, and GitHub comes back to this
+  machine with the App's id and private key (stored in `~/.config/agent-github`). Then you install it on the accounts
+  and repositories your agents work on.
+- It applies only inside the runner's worktrees (`.git/worktrees/bridge-*`): `~/.gitconfig` includes the App's
+  identity and credential helper there (`includeIf`), and `~/.local/bin/gh` (the `gh-wrapper`) runs `gh` with the
+  App's installation token there. Tokens last an hour and are cached until ten minutes before they expire.
+- Everywhere else, and in repositories where the App is not installed, git and `gh` keep your own login.
+- `agent-github status` shows what is set up; `agent-github use reviewer` makes a worktree work as the reviewer.
+- collie itself needs no change: it follows PRs by URL and branch, whoever opened them.
+
 ## QA runners
 
 A QA runner (purpose `qa-browser`) takes collie's verify tasks: after a build is deployed, a session opens the app in a
