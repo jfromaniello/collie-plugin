@@ -4,7 +4,8 @@
 connects Claude Code to it:
 
 - **`/collie:install-runner`**: makes this machine a collie runner: a code or research runner for the repo you are in,
-  or a QA runner (`qa-browser`) that verifies deployed changes with a browser, for one codebase or the whole project. It installs a service that
+  a QA runner (`qa-browser`) that verifies deployed changes with a browser, or a code reviewer (`reviewer`) that reviews
+  builds' PRs before the merge, for one codebase or the whole project. It installs a service that
   keeps `claude remote-control` alive (launchd on macOS, systemd `--user` on Linux) and creates the Claude Code
   scheduled task collie fires when the repo has work. It re-points the task when the machine's environment changes,
   and connects the task's API trigger to the repo's codebase in collie. The only manual step is generating the
@@ -53,6 +54,18 @@ code, so it runs in its own folder (`~/collie-qa/<project>`, an empty git reposi
   sends the job reference (`collie verify #N`).
 - **Prompt:** the QA prompt, the same text as collie's `Runner::QA_PROMPT` ([docs](https://collies.sh/docs/en/runners/qa-browser)).
 
+## Reviewer runners
+
+A reviewer runner (purpose `reviewer`) takes collie's review tasks: when a build of a goal whose category has
+`code_review: always` reaches review with its PR, a session reads the PR against the build and closes the review with
+a verdict: `approve`, `changes_requested` (only blocking findings; the build goes back to its coder on the same PR) or
+`escalate` (a person decides). Non-blocking comments go on the PR as comments, never as a GitHub approval. It never
+pushes code; it needs to read and comment on the codebase's PRs (for example with `gh`), and it can cover one codebase
+or the whole project.
+
+- **Prompt:** the reviewer prompt, the same text as collie's `Runner::REVIEWER_PROMPT`
+  ([docs](https://collies.sh/docs/en/runners#reviewer)).
+
 ## Polling instead of a runner
 
 An agent does not need a runner to work collie's tasks. A runner exists only so collie can wake someone; an agent
@@ -90,6 +103,15 @@ Then ask again; when nothing is ready, wait a few minutes and call list_ready_ta
 You are collie's research agent for this project: you answer read-only questions and you never change code. Nobody wakes you: you ask collie for work yourself.
 Call list_ready_tasks in collie via MCP with purpose research, claim the first task with purpose research, answer it following collie's MCP instructions and close it with a short summary that answers the question.
 Then ask again; when nothing is ready, wait a few minutes and call list_ready_tasks again.
+```
+
+### Code reviewer (`purpose: reviewer`), where it can read and comment on the codebase's PRs (for example with `gh`)
+
+```text
+You are collie's code reviewer for this project: you review pull requests before they are merged, and you never push code. Nobody wakes you: you ask collie for work yourself.
+Call list_ready_tasks in collie via MCP with purpose reviewer and claim the first task with purpose reviewer, following collie's MCP instructions. Read its PR against the build it reviews (review_of and the task's description).
+Separate blocking findings from comments: a noisy reviewer is worse than none. Use changes_requested only for what must change before the merge (a bug, a broken contract, a missing check, a security problem) and list each one in review_blocking. Leave everything else on the PR as a comment, never as a GitHub approval. Escalate with review_reason when you cannot judge it: business context you lack, or an architecture change. Otherwise approve.
+Close it with report_progress kind done and review_verdict. Then call wait_for_task with its goal_id, codebase and purpose reviewer, and review the next one of the same goal while it answers ready; when it answers finished, wait a few minutes and call list_ready_tasks again.
 ```
 
 ## Cleanup
