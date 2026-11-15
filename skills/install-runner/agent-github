@@ -207,12 +207,12 @@ installations() {
   echo "install it (or change its repositories): $web/apps/$APP_SLUG/installations/new"
 }
 
-# What each role may do. The coder pushes (workflows too: a branch that edits .github/workflows needs it) and opens
-# PRs; the reviewer reads the code and reviews PRs. Both read CI.
+# What each role may do. The coder pushes (workflows too: a branch that edits .github/workflows needs it), opens
+# PRs and reads, comments and opens issues; the reviewer reads the code and issues and reviews PRs. Both read CI.
 permissions() {
   case $1 in
-    coder) echo '{"metadata":"read","contents":"write","pull_requests":"write","workflows":"write","actions":"read","checks":"read","statuses":"read"}' ;;
-    reviewer) echo '{"metadata":"read","contents":"read","pull_requests":"write","actions":"read","checks":"read","statuses":"read"}' ;;
+    coder) echo '{"metadata":"read","contents":"write","pull_requests":"write","issues":"write","workflows":"write","actions":"read","checks":"read","statuses":"read"}' ;;
+    reviewer) echo '{"metadata":"read","contents":"read","pull_requests":"write","issues":"read","actions":"read","checks":"read","statuses":"read"}' ;;
   esac
 }
 
