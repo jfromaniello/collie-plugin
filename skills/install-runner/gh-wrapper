@@ -1,0 +1,24 @@
+#!/bin/bash
+# gh for the runner's agents, installed as ~/.local/bin/gh (ahead of the real gh in PATH). Inside an agent worktree
+# with a GitHub App set up for its role (agent-github active), gh runs with that App's token, so PRs and reviews come
+# from <app>[bot]. Anywhere else, or when the App is not installed on the repository's owner, it is the real gh with
+# the person's login.
+self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")
+real_gh=""
+IFS=: read -ra dirs <<<"$PATH"
+for dir in "${dirs[@]}"; do
+  candidate="$dir/gh"
+  [[ -x $candidate && ! -d $candidate ]] || continue
+  [[ $(cd "$dir" 2>/dev/null && pwd -P)/gh == "$self" ]] && continue
+  real_gh=$candidate
+  break
+done
+[[ -n $real_gh ]] || { echo "gh: the GitHub CLI is not installed (only this wrapper was found)" >&2; exit 127; }
+
+if [[ -z ${GH_TOKEN:-}${GITHUB_TOKEN:-} ]] && "$HOME/.local/bin/agent-github" active 2>/dev/null; then
+  if token=$("$HOME/.local/bin/agent-github" token 2>/dev/null); then
+    GH_TOKEN=$token exec "$real_gh" "$@"
+  fi
+  echo "gh: no GitHub App token for this repository; using your own login" >&2
+fi
+exec "$real_gh" "$@"

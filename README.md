@@ -4,8 +4,8 @@
 connects Claude Code to it:
 
 - **`/collie:install-runner`**: makes this machine a collie runner: a code or research runner for the repo you are in,
-  a QA runner (`qa-browser`) that verifies deployed changes with a browser, or a code reviewer (`reviewer`) that reviews
-  builds' PRs before the merge, for one codebase or the whole project. It installs a service that
+  a code reviewer (`reviewer`) that reviews the repo's builds' PRs before the merge, or a QA runner (`qa-browser`) that
+  verifies deployed changes with a browser, for one codebase or the whole project. It installs a service that
   keeps `claude remote-control` alive (launchd on macOS, systemd `--user` on Linux) and creates the Claude Code
   scheduled task collie fires when the repo has work. It re-points the task when the machine's environment changes,
   and connects the task's API trigger to the repo's codebase in collie. The only manual step is generating the
@@ -39,6 +39,23 @@ machine awake on AC power.
 
 Logs: `~/.local/state/claude-rc/<name>.log` (service) and `<name>.out.log` (the `claude rc` pane).
 
+## The agents' own GitHub identity (optional)
+
+By default a runner's agents push and open PRs with your GitHub login, so the PRs are yours and GitHub does not let
+you review or approve them. `install-runner` can give them their own identity instead: a GitHub App you own per role,
+`coder` and optionally `reviewer`. Their commits, PRs and reviews then show up as `<app>[bot]`.
+
+- `skills/install-runner/agent-github create coder` creates the App with GitHub's manifest flow: a local page sends
+  GitHub the manifest with the role's permissions, you confirm the name and create it, and GitHub comes back to this
+  machine with the App's id and private key (stored in `~/.config/agent-github`). Then you install it on the accounts
+  and repositories your agents work on.
+- It applies only inside the runner's worktrees (`.git/worktrees/bridge-*`): `~/.gitconfig` includes the App's
+  identity and credential helper there (`includeIf`), and `~/.local/bin/gh` (the `gh-wrapper`) runs `gh` with the
+  App's installation token there. Tokens last an hour and are cached until ten minutes before they expire.
+- Everywhere else, and in repositories where the App is not installed, git and `gh` keep your own login.
+- `agent-github status` shows what is set up; `agent-github use reviewer` makes a worktree work as the reviewer.
+- collie itself needs no change: it follows PRs by URL and branch, whoever opened them.
+
 ## QA runners
 
 A QA runner (purpose `qa-browser`) takes collie's verify tasks: after a build is deployed, a session opens the app in a
@@ -57,12 +74,14 @@ code, so it runs in its own folder (`~/collie-qa/<project>`, an empty git reposi
 ## Reviewer runners
 
 A reviewer runner (purpose `reviewer`) takes collie's review tasks: when a build of a goal whose category has
-`code_review: always` reaches review with its PR, a session reads the PR against the build and closes the review with
-a verdict: `approve`, `changes_requested` (only blocking findings; the build goes back to its coder on the same PR) or
-`escalate` (a person decides). Non-blocking comments go on the PR as comments, never as a GitHub approval. It never
-pushes code; it needs to read and comment on the codebase's PRs (for example with `gh`), and it can cover one codebase
-or the whole project.
+`code_review: always` reaches review with its PR, a session reads the PR (or the whole stack of PRs) against the build
+and closes the review with a verdict: `approve`, `changes_requested` (only blocking findings; the build goes back to
+its coder on the same PR) or `escalate` (a person decides). It posts the verdict on GitHub as a review per PR with
+`gh`, each finding inline, and never pushes code. It runs in this repo's codebase; give it its own GitHub identity
+(`reviewer` App, above) so it can approve or request changes on the coder's PRs.
 
+- **Codex (optional):** the Claude session talks to collie and GitHub, and hands the judgment to `codex exec` with
+  `skills/install-runner/codex-review.schema.json` (installed in `~/.config/collie/`).
 - **Prompt:** the reviewer prompt, the same text as collie's `Runner::REVIEWER_PROMPT`
   ([docs](https://collies.sh/docs/en/runners#reviewer)).
 
@@ -85,7 +104,7 @@ reference and would never start on their own). Details: https://collies.sh/docs/
 
 ```text
 You are collie's worker for this repo. Nobody wakes you: you ask collie for work yourself.
-Find this repo's codebase in collie via MCP (list_codebases, by repo_full_name). Call list_ready_tasks with purpose code and that codebase, claim the first task with purpose code, and work it following collie's MCP instructions. When you close it and its goal has more open tasks here, call wait_for_task with that goal_id, the codebase and purpose code, and keep working while it answers ready.
+Find this repo's codebase in collie via MCP (list_codebases, by repo_full_name). Call list_ready_tasks with purpose code and that codebase, claim the first task with purpose code, and work it following collie's MCP instructions. When you close a task, pass your session usage as its runner_rules say. When you close it and its goal has more open tasks here, call wait_for_task with that goal_id, the codebase and purpose code, and keep working while it answers ready.
 When nothing is ready, wait a few minutes and call list_ready_tasks again. Take only collie's tasks for this repo.
 ```
 
@@ -93,7 +112,7 @@ When nothing is ready, wait a few minutes and call list_ready_tasks again. Take 
 
 ```text
 You are collie's QA agent for this project: you verify changes in the running app with a browser, and you never change code. Nobody wakes you: you ask collie for work yourself.
-Call list_ready_tasks in collie via MCP with purpose qa-browser and claim the first task with purpose qa-browser, following collie's MCP instructions. Open its verify_target in the browser (relative paths start at $QA_APP_URL), sign in with the test account from this machine ($QA_USERNAME and $QA_PASSWORD), do what the task says and compare with verify_expected. Take the screenshots verify_evidence asks for, upload them with create_upload_url, and close with report_progress: verify_result passed (kind done) or failed (kind failed), verify_steps, verify_observed and image_ids. Never write the credentials into collie, a task, a step or a screenshot.
+Call list_ready_tasks in collie via MCP with purpose qa-browser and claim the first task with purpose qa-browser, following collie's MCP instructions. Open its verify_target in the browser (relative paths start at $QA_APP_URL), sign in with the test account from this machine ($QA_USERNAME and $QA_PASSWORD), do what the task says and compare with verify_expected. Take the screenshots verify_evidence asks for, upload them with create_upload_url, and close with report_progress: verify_result passed (kind done) or failed (kind failed), verify_steps, verify_observed, image_ids and your session usage as claim_task's runner_rules say. Never write the credentials into collie, a task, a step or a screenshot.
 Then ask again; when nothing is ready, wait a few minutes and call list_ready_tasks again.
 ```
 
@@ -101,17 +120,17 @@ Then ask again; when nothing is ready, wait a few minutes and call list_ready_ta
 
 ```text
 You are collie's research agent for this project: you answer read-only questions and you never change code. Nobody wakes you: you ask collie for work yourself.
-Call list_ready_tasks in collie via MCP with purpose research, claim the first task with purpose research, answer it following collie's MCP instructions and close it with a short summary that answers the question.
+Call list_ready_tasks in collie via MCP with purpose research, claim the first task with purpose research, answer it following collie's MCP instructions and close it with a short summary that answers the question and your session usage as claim_task's runner_rules say.
 Then ask again; when nothing is ready, wait a few minutes and call list_ready_tasks again.
 ```
 
-### Code reviewer (`purpose: reviewer`), where it can read and comment on the codebase's PRs (for example with `gh`)
+### Reviewer (`purpose: reviewer`), run in the codebase's repo
 
 ```text
 You are collie's code reviewer for this project: you review pull requests before they are merged, and you never push code. Nobody wakes you: you ask collie for work yourself.
-Call list_ready_tasks in collie via MCP with purpose reviewer and claim the first task with purpose reviewer, following collie's MCP instructions. Read its PR against the build it reviews (review_of and the task's description).
-Separate blocking findings from comments: a noisy reviewer is worse than none. Use changes_requested only for what must change before the merge (a bug, a broken contract, a missing check, a security problem) and list each one in review_blocking. Leave everything else on the PR as a comment, never as a GitHub approval. Escalate with review_reason when you cannot judge it: business context you lack, or an architecture change. Otherwise approve.
-Close it with report_progress kind done and review_verdict. Then call wait_for_task with its goal_id, codebase and purpose reviewer, and review the next one of the same goal while it answers ready; when it answers finished, wait a few minutes and call list_ready_tasks again.
+Call list_ready_tasks in collie via MCP with purpose reviewer and claim the first task with purpose reviewer, following collie's MCP instructions. Read its PR against the build it reviews (review_of and the task's description). When claim_task also returns pull_requests, the review covers a stack of PRs: read every one, bottom to top, each against its own base, and rule on the whole stack; with changes_requested, name the PR in each finding and list in review_blocking_task_ids the task_id of every PR with blocking findings.
+Separate blocking findings from comments: a noisy reviewer is worse than none. Use changes_requested only for what must change before the merge (a bug, a broken contract, a missing check, a security problem) and list each one in review_blocking. Leave everything else as non-blocking comments. Post your verdict on GitHub as one review per PR with gh, each finding inline on its line: REQUEST_CHANGES on a PR with blocking findings, APPROVE when you approve, COMMENT when you escalate and on a PR of a stack without blocking findings; if GitHub refuses that event (a PR you opened), post it as COMMENT. Pass the review URL as review_comments_url. Escalate with review_reason when you cannot judge it: business context you lack, or an architecture change. Otherwise approve.
+Close it with report_progress kind done, review_verdict and your session usage as claim_task's runner_rules say. Then call wait_for_task with its goal_id, codebase and purpose reviewer, and review the next one of the same goal while it answers ready; when it answers finished, wait a few minutes and call list_ready_tasks again.
 ```
 
 ## Cleanup
