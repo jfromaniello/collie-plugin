@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "collie code review by Codex",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "reason", "findings"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["approve", "changes_requested", "escalate"] },
+    "summary": { "type": "string", "description": "Two to five sentences on the change and the verdict, for the review body." },
+    "reason": { "type": "string", "description": "With escalate: what a person has to decide and why. Otherwise empty." },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pr_number", "path", "line", "blocking", "body"],
+        "properties": {
+          "pr_number": { "type": "integer", "description": "The PR the finding belongs to (one of a stack)." },
+          "path": { "type": "string", "description": "File path relative to the repo root, as in the PR diff." },
+          "line": { "type": "integer", "description": "Line in the new version of the file, inside a hunk of that PR's diff." },
+          "blocking": { "type": "boolean", "description": "true only for what must change before the merge: a bug, a broken contract, a missing check, a security problem." },
+          "body": { "type": "string", "description": "The comment: what is wrong, why it matters and what to do." }
+        }
+      }
+    }
+  }
+}
