@@ -201,7 +201,9 @@ With `RemoteTrigger` `list`, look for a scheduled task already bound to this rep
 - Otherwise `create` one: name `collie worker · <codebase>` (QA runner: `collie QA · <project>`), `environment_id` =
   the `env_…` from step 3 (reviewer: `collie reviewer · <codebase>`), no schedule (collie fires it; a run without a payload would only wait), and the prompt for
   its purpose. On a bridge environment the payload reaches the session as a second message once the first turn ends,
-  which is why the first turn must only wait.
+  which is why the first turn must only wait. Without connectors named in the create, the server attaches every
+  connector of the account (mail, drive…): then `update` it with `clear_mcp_connections: true` (the session uses this
+  machine's collie MCP), and say so.
 
 Code and research runners use the worker prompt:
 
