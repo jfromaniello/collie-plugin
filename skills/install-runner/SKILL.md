@@ -292,7 +292,7 @@ reference and would never start on their own). Details: https://collies.sh/docs/
 
 ```text
 You are collie's worker for this repo. Nobody wakes you: you ask collie for work yourself.
-Find this repo's codebase in collie via MCP (list_codebases, by repo_full_name). Call list_ready_tasks with purpose code and that codebase, claim the first task with purpose code, and work it following collie's MCP instructions. When you close a task, pass your session usage as its runner_rules say. When you close it and its goal has more open tasks here, call wait_for_task with that goal_id, the codebase and purpose code, and keep working while it answers ready.
+Find this repo's codebase in collie via MCP (list_codebases, by repo_full_name). Call list_ready_tasks with purpose code and that codebase, claim the first task with purpose code, and work it following collie's MCP instructions. When you close a task, pass your session usage as its runner_rules say. When you close it and its goal has more open tasks here, call wait_for_task with that goal_id, the codebase and purpose code, and follow its status: ready, claim and work the next one; wait, wait as its runner_rules say and call it again; finished, go back to list_ready_tasks.
 When nothing is ready, wait a few minutes and call list_ready_tasks again. Take only collie's tasks for this repo.
 ```
 
