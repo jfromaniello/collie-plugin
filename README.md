@@ -140,5 +140,6 @@ checkout in `<repo>/.claude/worktrees/bridge-cse_<id>`. `skills/install-runner/c
 [prompt-prefix ...]` runs every hour (launchd `StartInterval`, or a systemd `--user` timer). For each worktree whose
 session started with the worker prompt (or one of the prefixes given) and has been idle for `IDLE_HOURS` (default 2),
 it stops the session and removes the worktree and its `worktree-bridge-*` branch if it has no changes and no commits
-missing from the remotes; otherwise it keeps it and logs why. Sessions opened by hand through the same bridge are
-never touched. `--dry-run` prints what it would do. Log: `~/.local/state/claude-rc/<name>.cleanup.log`.
+missing from the remotes; otherwise it keeps it and logs why. When a session's process is gone (archived from Claude,
+or crashed), its worktree goes through the same check without the idle wait: on the next run for a runner session,
+after `MANUAL_IDLE_HOURS` (default 24) for one opened by hand. Live sessions opened by hand are never touched. `--dry-run` prints what it would do. Log: `~/.local/state/claude-rc/<name>.cleanup.log`.

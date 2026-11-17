@@ -178,8 +178,10 @@ and its folder from step 2 is the REPO_DIR below.
 5. Install the hourly cleanup. `claude rc --spawn worktree` never ends a session nor removes its worktree, so each
    run leaves a process and a checkout in `<repo>/.claude/worktrees/bridge-cse_<id>`. `claude-worktree-cleanup`
    stops the runner's sessions idle for 2 hours and removes their worktrees when nothing would be lost (no changes,
-   no commits missing from the remotes); anything else it keeps and logs. It only touches sessions whose first prompt
-   starts with the worker prompt below, never the ones someone opened by hand. Copy it to
+   no commits missing from the remotes); anything else it keeps and logs. Of the live sessions it only touches those
+   whose first prompt starts with the worker prompt below, never the ones someone opened by hand. When a session's
+   process is gone (archived from Claude, or crashed), its worktree gets the same check without the idle wait: on
+   the next run for a runner session, after 24 hours (`MANUAL_IDLE_HOURS`) for one opened by hand. Copy it to
    `~/.local/bin/claude-worktree-cleanup` (`chmod +x`; same rule as above if a different file is there). If the repo's
    existing scheduled task keeps a different prompt, pass its first words as an extra argument after REPO_DIR.
    QA runner: pass `"You are collie's QA agent"` as that extra argument, so the cleanup recognizes its sessions.
