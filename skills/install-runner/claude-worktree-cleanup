@@ -17,7 +17,8 @@
 #   4. Remove the worktree only if it has no changes (caches like __pycache__ and untracked symlinks such as a linked
 #      node_modules do not count) and no commits missing from the remotes, plus its throwaway worktree-bridge-* branch. Anything else is kept and
 #      logged, for a person to look at.
-# Before that, for every bridge worktree (runner or not) whose session process is gone, it stops the processes still
+# Before that, for every bridge worktree (runner or not) whose session process is gone (no bridge process and no claude
+# working inside it, so a session resumed by hand with `claude --resume` counts as alive), it stops the processes still
 # running inside it: with their session gone they are orphans nobody will stop.
 
 set -u
@@ -82,6 +83,18 @@ pids_in() {
   awk -v wt="$1" -F'\t' '$2 == wt || index($2, wt "/") == 1 { print $1 }' "$cwd_table"
 }
 
+# Whether the worktree's session is still running: the bridge's own process (--session-id cse_<id>), or any Claude Code
+# process working inside it, such as the session resumed by hand with `claude --resume` after its bridge process died,
+# which carries no cse id.
+session_alive() {
+  local id=$1 wt=$2 p
+  pgrep -f "session-id cse_$id" >/dev/null && return 0
+  for p in $(pids_in "$wt"); do
+    ps -o args= -p "$p" 2>/dev/null | grep -Eq '(^|/)claude( |$)|/claude/versions/' && return 0
+  done
+  return 1
+}
+
 # TERM, then KILL whatever is still alive a few seconds later.
 stop_pids() {
   local pids=$*
@@ -111,7 +124,7 @@ shopt -s nullglob
 for wt in "$main"/.claude/worktrees/bridge-cse_*/; do
   wt=${wt%/}
   id=${wt##*bridge-cse_}
-  pgrep -f "session-id cse_$id" >/dev/null && continue
+  session_alive "$id" "$wt" && continue
   orphans=$(pids_in "$wt" | tr '\n' ' ')
   [[ -z ${orphans// } ]] && continue
   log "orphans in $id (session gone): stop pid $orphans"
@@ -131,7 +144,7 @@ for wt in "$main"/.claude/worktrees/bridge-cse_*/; do
     age_s=$(( now - $(mtime "$wt/.git") ))
   fi
   age_h=$(( age_s / 3600 ))
-  if pgrep -f "session-id cse_$id" >/dev/null; then
+  if session_alive "$id" "$wt"; then
     # A live session: only runner sessions, once idle.
     (( runner )) || continue
     if (( age_h < idle_hours )); then log "skip $id: active ${age_h}h ago"; continue; fi
