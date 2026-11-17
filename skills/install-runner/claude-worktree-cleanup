@@ -6,9 +6,12 @@
 #
 # `claude rc --spawn worktree` never ends a session on its own and never removes its worktree, so every run leaves a
 # live process and a checkout in <repo-dir>/.claude/worktrees/bridge-cse_<id>. For each of those worktrees:
-#   1. Only runner sessions are touched: those whose first prompt starts with one of the prefixes (default: the collie
-#      worker prompt). Sessions someone opened by hand through the same bridge are never touched.
-#   2. Skip it if its transcript changed in the last $IDLE_HOURS hours (default 2).
+#   1. Runner sessions are those whose first prompt starts with one of the prefixes (default: the collie worker
+#      prompt). A live session someone opened by hand through the same bridge is never touched.
+#   2. Skip it if it is still active: a live runner session whose transcript changed in the last $IDLE_HOURS hours
+#      (default 2); a runner session whose process is gone (archived from Claude, or crashed) only for its first 10
+#      minutes; a session opened by hand whose process is gone, for $MANUAL_IDLE_HOURS hours (default 24), in case it
+#      can be resumed or left files git ignores.
 #   3. Stop the session's process and every process still running inside the worktree (dev servers, watchers and test
 #      runs a session started in the background outlive it and pile up until the machine runs out of memory).
 #   4. Remove the worktree only if it has no changes (caches like __pycache__ and untracked symlinks such as a linked
@@ -30,6 +33,8 @@ main=${1%/}; shift
 # (Not an empty array plus a default: macOS ships bash 3.2, where an empty array trips set -u.)
 if [[ $# -eq 0 ]]; then prefixes=("You are collie's worker for this repo."); else prefixes=("$@"); fi
 idle_hours=${IDLE_HOURS:-2}
+manual_idle_hours=${MANUAL_IDLE_HOURS:-24}
+gone_grace_s=600
 
 log() { echo "$(date '+%F %T') $*"; }
 run() { if (( dry )); then log "  (dry-run) $*"; else "$@"; fi; }
@@ -117,14 +122,28 @@ for wt in "$main"/.claude/worktrees/bridge-cse_*/; do
   wt=${wt%/}
   id=${wt##*bridge-cse_}
   transcript=$(ls -t "$(transcript_dir "$wt")"/*.jsonl 2>/dev/null | head -1)
+  runner=1
   if [[ -n $transcript ]]; then
-    is_runner_prompt "$(first_prompt "$transcript")" || continue
-    age_h=$(( (now - $(mtime "$transcript")) / 3600 ))
+    is_runner_prompt "$(first_prompt "$transcript")" || runner=0
+    age_s=$(( now - $(mtime "$transcript") ))
   else
     # Spawned but never prompted: there is no transcript, so age it by the worktree.
-    age_h=$(( (now - $(mtime "$wt/.git")) / 3600 ))
+    age_s=$(( now - $(mtime "$wt/.git") ))
   fi
-  if (( age_h < idle_hours )); then log "skip $id: active ${age_h}h ago"; continue; fi
+  age_h=$(( age_s / 3600 ))
+  if pgrep -f "session-id cse_$id" >/dev/null; then
+    # A live session: only runner sessions, once idle.
+    (( runner )) || continue
+    if (( age_h < idle_hours )); then log "skip $id: active ${age_h}h ago"; continue; fi
+  elif (( runner )); then
+    # Session gone (archived or crashed): nothing can resume it, so no idle wait, only a short grace for a worktree
+    # whose session is still starting.
+    if (( age_s < gone_grace_s )); then log "skip $id: session gone ${age_s}s ago"; continue; fi
+  else
+    # A session opened by hand whose process is gone: archived, crashed or cut by a bridge restart. Wait longer, in
+    # case it can still be resumed or left something git ignores (.env, logs, screenshots).
+    if (( age_h < manual_idle_hours )); then log "skip $id: manual session gone, active ${age_h}h ago"; continue; fi
+  fi
 
   pids=$( { pgrep -f "session-id cse_$id"; pids_in "$wt"; } | sort -u | tr '\n' ' ')
   if [[ -n ${pids// } ]]; then
