@@ -20,6 +20,22 @@ dir=$2
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
+# The sessions claude rc spawns run their Bash with this process's PATH: Claude Code snapshots the person's shell rc
+# but restores the inherited PATH at the end, so what the rc adds (rbenv/pyenv shims, nvm, pnpm) is lost and the
+# agents pick Homebrew's ruby or miss pnpm. Take the PATH of the person's interactive login shell instead, keeping the
+# minimal one above as a fallback. The marker skips whatever the rc prints on stdout.
+login_shell_path() {
+  local shell=${SHELL:-}
+  if [ -z "$shell" ]; then
+    shell=$(dscl . -read "/Users/$USER" UserShell 2>/dev/null | awk '{print $2}')
+    [ -n "$shell" ] || shell=$(getent passwd "$USER" 2>/dev/null | cut -d: -f7)
+  fi
+  [ -x "$shell" ] || return 0
+  "$shell" -lic 'printf "\n__COLLIE_PATH__%s\n" "$PATH"' </dev/null 2>/dev/null | sed -n 's/^__COLLIE_PATH__//p' | tail -1
+}
+shell_path=$(login_shell_path)
+[ -n "$shell_path" ] && export PATH="$shell_path:$PATH"
+
 state_dir="$HOME/.local/state/claude-rc"
 out_log="$state_dir/$name.out.log"
 env_file="$state_dir/$name.env"
