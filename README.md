@@ -8,7 +8,8 @@ connects Claude Code to it:
   verifies deployed changes with a browser, for one codebase or the whole project. It installs a service that
   keeps `claude remote-control` alive (launchd on macOS, systemd `--user` on Linux) and creates the Claude Code
   scheduled task collie fires when the repo has work. It re-points the task when the machine's environment changes,
-  and connects the task's API trigger to the repo's codebase in collie. The only manual step is generating the
+  and connects the task's API trigger to the repo's codebase in collie (a runner on this machine works this repo only;
+  for one runner across several repos, use a cloud routine that checks them all out). The only manual step is generating the
   trigger's token in claude.ai/code.
 - **`/collie:work [goal]`**: works this repo's ready collie tasks one after another until none is left.
 
